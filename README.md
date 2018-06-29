@@ -7,7 +7,7 @@ PrePreqs
 Psycopg2
 
 Setup
-~~~~~
+=====
 1. Create the replication slot in the master database
 2. Create a directory for the extracted change files, this location has to be specified in the parfiles.
 3. Setup parameter file for extraction
