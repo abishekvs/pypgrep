@@ -35,6 +35,7 @@ REPSLOTNAME=""
 ############################
 def applyloop(pinterval):
 	pintr=5
+	curr_file = ""
 	while 1:
 		if not re.search("^[0-9]+$",pinterval):
 			print (now(),"ERROR:[APPLYLOOP]", "POLLINTERVAL='"+pinterval+"'","should only be an integer, setting interval to 5 minutes",flush=True)
@@ -52,6 +53,7 @@ def applyloop(pinterval):
 			
 			dlines=[]
 			for file in filelist:
+				curr_file = file
 				with open(file,'rt') as f:
 					dlines=f.readlines()
 				
@@ -69,6 +71,7 @@ def applyloop(pinterval):
 		except:
 			e=sys.exc_info()
 			print (now(),"ERROR:[APPLYLOOP]", e[1],flush=True)
+			print (now(),"DEBUG:[APPLYLOOP]","EXTRFILE="+curr_file,flush=True)
 			exit()
 			
 def extractloop(pinterval):
@@ -261,28 +264,69 @@ def _UPDATE(OBJ,OBJNAME,datalist):
 		
 		conn = dbconnect(DBUSER,DBPASS,DBHOST,DBNAME)
 		cur=conn.cursor()
-		cur.execute("select column_name || '[' || data_type || ']:' from information_schema.columns where table_name='"+table+"' and table_schema='"+schema+"'")
+		cur.execute("select column_name,data_type from information_schema.columns where table_name='"+table+"' and table_schema='"+schema+"'")
 		coldefs = cur.fetchall()
-
-		whereclause = "1=0"
 		
-		clist =[]
-		
-		for cols in coldefs:
-			clist.append(cols[0])
-			clist.append(cols[1])
-			clist.append(cols[0] + "[" + cols[1] + "]:")
-		
-		for c in range(len(collist)):
-			#print(collist[c],clist[c*3],clist[(c*3)+2])
-			if c < len(collist)-1:
-				updstr +=  clist[c*3] + "=" + collist[c].replace(clist[(c*3)+2],"") + ","
+		dlist = {}
+		dtyplst = {}
+		found=0
+		datastr=""
+		for col in range(len(coldefs)):
+			found=datalist[coldefs[col][0] + "[" + coldefs[col][1] + "]:"].strip().find(" new-tuple: "+coldefs[col][0] + "[" + coldefs[col][1] + "]:")
+			dlist[coldefs[col][0]]=datalist[coldefs[col][0] + "[" + coldefs[col][1] + "]:"].strip()
+			dtyplst[coldefs[col][0]]=coldefs[col][1]
+			if dlist[coldefs[col][0]].lower()=='null':
+				dlist[coldefs[col][0]]=None  ## Setting value to None will automatically set the bind variable to NULL
+			if col == (len(coldefs)-1):
+				if found > 0:
+					datastr += coldefs[col][0] + " = %(NEWKEYVAL"+coldefs[col][0]+")s"
+				else:
+					datastr += coldefs[col][0] + " = %("+coldefs[col][0]+")s"
 			else:
-				updstr +=  clist[c*3] + "=" + collist[c].replace(clist[(c*3)+2],"")
+				if found > 0:
+					datastr += coldefs[col][0] + " = %(NEWKEYVAL"+coldefs[col][0]+")s,"
+				else:
+					datastr += coldefs[col][0] + " = %("+coldefs[col][0]+")s,"
 		
-		SQL = "UPDATE " + OBJNAME + " SET " + updstr + " WHERE " + whereclause
+		cur.execute("""
+		select tc.table_schema, tc.table_name, kc.column_name
+		from
+			information_schema.table_constraints tc,
+			information_schema.key_column_usage kc
+		where
+			tc.constraint_type = 'PRIMARY KEY'
+			and kc.table_name = tc.table_name and kc.table_schema = tc.table_schema
+			and kc.constraint_name = tc.constraint_name
+			and tc.table_name=%s
+			and tc.table_schema=%s
+		order by 1,2
+		""",
+		(table,schema)
+		)
+
+		row = cur.fetchall()
 		
-		return SQL
+		pkcol = row[0][2]
+		
+		found=datalist[pkcol + "[" + dtyplst[pkcol] + "]:"].strip().find(" new-tuple: "+pkcol + "[" + dtyplst[pkcol] + "]:")
+		pkeyval=datalist[pkcol + "[" + dtyplst[pkcol] + "]:"].strip()[:datalist[pkcol + "[" + dtyplst[pkcol] + "]:"].strip().find(" new-tuple: "+pkcol + "[" + dtyplst[pkcol] + "]:")]
+		tmpstr=dlist[pkcol]
+		pknewval=tmpstr[len(pkeyval + " new-tuple: "+pkcol + "[" + dtyplst[pkcol] + "]:"):]
+		
+		
+		
+		if (len(pkeyval.strip())>0) and (found > 0):
+			dlist[pkcol]=pkeyval
+			dlist["NEWKEYVAL"+pkcol]=pknewval
+		
+		whereclause = pkcol + "=" + "%("+ pkcol +")s"
+		
+		
+		SQL = "UPDATE " + OBJNAME + " SET " + datastr + " WHERE " + whereclause
+		##print (now(),"ERROR:[_UPDATE]",SQL,dlist,flush=True)
+		##SQL=""
+		return [SQL,dlist]
+		
 	except:
 		print (now(),"ERROR:[_UPDATE]",sys.exc_info()[1],flush=True)
 		return None
@@ -290,24 +334,48 @@ def _UPDATE(OBJ,OBJNAME,datalist):
 def _DELETE(OBJ,OBJNAME,datalist):
 	try:
 		schema,table = OBJNAME.split(".")
-		
+
 		conn = dbconnect(DBUSER,DBPASS,DBHOST,DBNAME)
 		cur=conn.cursor()
-		cur.execute("select column_name || '[' || data_type || ']:' from information_schema.columns where table_name='"+table+"' and table_schema='"+schema+"'")
+		cur.execute("select column_name,data_type from information_schema.columns where table_name='"+table+"' and table_schema='"+schema+"'")
 		coldefs = cur.fetchall()
 		
-		whereclause = "1=0"
+		dlist = {}
+		datastr=""
+		for col in range(len(coldefs)):
+			dlist[coldefs[col][0]]=datalist[coldefs[col][0] + "[" + coldefs[col][1] + "]:"].strip()
+			#if dlist[coldefs[col][0]].lower()=='null':
+			#	dlist[coldefs[col][0]]=None  ## Setting value to None will automatically set the bind variable to NULL
+			#if col == (len(coldefs)-1):
+			#	datastr += coldefs[col][0] + " = %("+coldefs[col][0]+")s"
+			#else:
+			#	datastr += coldefs[col][0] + " = %("+coldefs[col][0]+")s and "
 		
-		clist =[]
+		cur.execute("""
+		select tc.table_schema, tc.table_name, kc.column_name
+		from
+			information_schema.table_constraints tc,
+			information_schema.key_column_usage kc
+		where
+			tc.constraint_type = 'PRIMARY KEY'
+			and kc.table_name = tc.table_name and kc.table_schema = tc.table_schema
+			and kc.constraint_name = tc.constraint_name
+			and tc.table_name=%s
+			and tc.table_schema=%s
+		order by 1,2
+		""",
+		(table,schema)
+		)
+
+		row = cur.fetchall()
 		
-		for cols in coldefs:
-			clist.append(cols[0])
-			clist.append(cols[1])
-			clist.append(cols[0] + "[" + cols[1] + "]:")
+		pkcol = row[0][2]
+		
+		whereclause = pkcol + "=" + "%("+ pkcol +")s"
 		
 		SQL = "DELETE FROM " + OBJNAME + " WHERE " + whereclause
-		
-		return SQL
+
+		return [SQL,dlist]
 	except:
 		print (now(),"ERROR:[_DELETE]",sys.exc_info()[1],flush=True)
 		return None
@@ -338,10 +406,10 @@ def dbconnect(dbuser,dbpass,dbhost,dbname):
 	##print (now(),"dbconnect", dbuser,dbpass,dbhost,dbname,flush=True)
 	try:	
 		dbconn = psycopg2.connect("dbname='"+dbname+"' user='"+dbuser+"' host='"+host+"' port='"+port+"' password='"+dbpass+"'")
-		print (now(),"MESSAGE:[DBCONNECT] Connected to database", dbname, "on host", dbhost, "as" , dbuser,flush=True)
+		##print (now(),"MESSAGE:[DBCONNECT] Connected to database", dbname, "on host", dbhost, "as" , dbuser,flush=True)
 		return dbconn 
 	except:
-		print (now(),"ERROR:[DBCONNECT]",sys.exc_info()[1],flush=True)
+		print (now(),"ERROR:[DBCONNECT]",sys.exc_info()[1],"while trying to connect to database", dbname, "on host", dbhost, "as" , dbuser, flush=True)
 		return None
 
 def now():
@@ -356,7 +424,7 @@ def cmdlineparams(cmdline):
 			plist[key.strip().lower()]=val.strip()
 		return plist
 	except:
-		print (now(),"USAGE:",cmdline[0],"PARFILE=<parameter-file-name>","LOGFILE=<log-file-name>","DEBUG=<Y|N>",flush=True)
+		print("USAGE:",cmdline[0],"PARFILE=<parameter-file-name>","LOGFILE=<log-file-name>","DEBUG=<Y|N>")
 		#print (now(),"ERROR:[CMDLINEPARAMS]",sys.exc_info(),flush=True)
 		exit()
 		
@@ -383,19 +451,19 @@ def loadparams(plist):
 	if plist.get('mode') != None: MODE = plist.get('mode')
 	if plist.get('pollinterval') != None: POLLINTERVAL = plist.get('pollinterval')
 	if plist.get('fileprefix') != None: FILEPREFIX = plist.get('fileprefix')
-	if plist.get('extrpath') != None: FILEPREFIX = plist.get('extrpath')
+	if plist.get('extrpath') != None: EXTRPATH = plist.get('extrpath')
 	if plist.get('repslotname') != None: REPSLOTNAME = plist.get('repslotname')
 
 def appmain(cmdline):
 	'''This is the main section of the app'''
 
 	if len(cmdline) <= 1:
-		print (now(),"USAGE:",cmdline[0],"PARFILE=<parameter-file-name>","LOGFILE=<log-file-name>","DEBUG=<Y|N>",flush=True)
+		print("USAGE:",cmdline[0],"PARFILE=<parameter-file-name>","LOGFILE=<log-file-name>","DEBUG=<Y|N>")
 		exit()	
 	
 	CMDLINEARGS=cmdlineparams(cmdline)
 	if CMDLINEARGS is None:
-		print (now(),"ERROR:[appmain]","Invalid or empty command line specified",flush=True)
+		print("ERROR:[appmain]","Invalid or empty command line specified")
 		exit()
 	else:
 		pfile=CMDLINEARGS.get('parfile')
@@ -404,7 +472,7 @@ def appmain(cmdline):
 	PARAMLIST=readparams(pfile)
 
 	if PARAMLIST is None:
-		print (now(),"ERROR:[appmain]","Empty parameter list",flush=True)
+		print("ERROR:[appmain]","Empty parameter list")
 		exit()
 		
 	if logfile is not None:
@@ -418,5 +486,6 @@ def appmain(cmdline):
 		applyloop(POLLINTERVAL)
 	
 ##MAIN SECTION###
-appmain(argv)
+if __name__ == "__main__":
+	appmain(argv)
 
