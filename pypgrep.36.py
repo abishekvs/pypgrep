@@ -31,6 +31,8 @@ POLLINTERVAL=5
 EXTRPATH=""
 FILEPREFIX="EXTR"
 REPSLOTNAME=""
+TABLES=""
+
 
 ############################
 def applyloop(pinterval):
@@ -134,8 +136,16 @@ def extractandwrite(rep_slot):
 
 			with open(epath+ os.sep + FILEPREFIX + "." + str(xid[0]),"w") as f:	
 				for row in records:
-					f.write(row[1])
-					f.write("\n")
+					ptree={}
+					line=row[1]
+					if line[:3] not in  ('BEG','COM'):
+						ptree=parseline(line)
+						###print("LINE:",line,"ROW:",row[1],"PTREE:",ptree)
+						TBLLIST=TABLES.upper().strip().split(",")
+						##print(ptree['OBJNAME'].upper().strip(),TBLLIST)
+						if (ptree['OBJNAME'].upper().strip() in TBLLIST):
+							f.write(row[1])
+							f.write("\n")
 
 			cursor_peek.close()
 			
@@ -191,7 +201,7 @@ def buildsql(parsetree):
 		
 		conn = dbconnect(DBUSER,DBPASS,DBHOST,DBNAME)
 		cur=conn.cursor()
-		cur.execute("select column_name || '[' || data_type || ']:' from information_schema.columns where table_name='"+table+"' and table_schema='"+schema+"'")
+		cur.execute("select column_name || '[' || (case when data_type = 'USER-DEFINED' then udt_name else data_type end) || ']:' from information_schema.columns where table_name='"+table+"' and table_schema='"+schema+"'")
 		coldefs = cur.fetchall()
 
 		datastring = parsetree['DATASTRING']
@@ -202,9 +212,12 @@ def buildsql(parsetree):
 			##print(c,coldefs[c])
 			if c == (len(coldefs)-1):
 					datalist[coldefs[c][0]]=s[s.find(" "+coldefs[c][0])+len(" "+coldefs[c][0]):]
+					##print("S:",s[s.find(" "+coldefs[c][0])+len(" "+coldefs[c][0]):])
 			else:
 					datalist[coldefs[c][0]]=s[s.find(" "+coldefs[c][0])+len(" "+coldefs[c][0]):s.find(" "+coldefs[c+1][0])]
+					##print("S:",s[s.find(" "+coldefs[c][0])+len(" "+coldefs[c][0]):s.find(" "+coldefs[c+1][0])])
 		
+		##print("DATALIST:",datalist)
 		SQL,dlist=_buildstmt(OPNAME,OBJ,OBJNAME,datalist)	
 		##print(SQL)
 		return [SQL,dlist]
@@ -228,16 +241,25 @@ def _INSERT(OBJ,OBJNAME,datalist):
 		
 		conn = dbconnect(DBUSER,DBPASS,DBHOST,DBNAME)
 		cur=conn.cursor()
-		cur.execute("select column_name,data_type from information_schema.columns where table_name='"+table+"' and table_schema='"+schema+"'")
+		cur.execute("select column_name,(case when data_type = 'USER-DEFINED' then udt_name else data_type end) data_type from information_schema.columns where table_name='"+table+"' and table_schema='"+schema+"'")
 		coldefs = cur.fetchall()
 		
 		dlist = {}
 		datastr="("
 		colstr="("
 		for col in range(len(coldefs)):
+			##print("{INS}DATAITM:",datalist[coldefs[col][0] + "[" + coldefs[col][1] + "]:"].strip())
 			dlist[coldefs[col][0]]=datalist[coldefs[col][0] + "[" + coldefs[col][1] + "]:"].strip()
+			
+			if dlist[coldefs[col][0]][0]==dlist[coldefs[col][0]][len(dlist[coldefs[col][0]])-1]=="'":
+				tmpstr=dlist[coldefs[col][0]]
+				dlist[coldefs[col][0]]=tmpstr[1:len(tmpstr)-1]
+			
+			##print("{INS}DATAITM:",dlist)
+			
 			if dlist[coldefs[col][0]].lower()=='null':
 				dlist[coldefs[col][0]]=None
+			
 			if col == (len(coldefs)-1):
 				datastr += "%("+coldefs[col][0]+")s"
 				colstr += coldefs[col][0]
@@ -251,7 +273,7 @@ def _INSERT(OBJ,OBJNAME,datalist):
 		colstr += ")"
 		
 		SQL = "INSERT into " + OBJNAME + " " + colstr + " values " + datastr
-		
+		##print (now(),"ERROR:[_INSERT]",SQL,dlist,flush=True)
 		return [SQL,dlist]
 		
 	except:
@@ -264,7 +286,7 @@ def _UPDATE(OBJ,OBJNAME,datalist):
 		
 		conn = dbconnect(DBUSER,DBPASS,DBHOST,DBNAME)
 		cur=conn.cursor()
-		cur.execute("select column_name,data_type from information_schema.columns where table_name='"+table+"' and table_schema='"+schema+"'")
+		cur.execute("select column_name,(case when data_type = 'USER-DEFINED' then udt_name else data_type end) data_type  from information_schema.columns where table_name='"+table+"' and table_schema='"+schema+"'")
 		coldefs = cur.fetchall()
 		
 		dlist = {}
@@ -273,10 +295,21 @@ def _UPDATE(OBJ,OBJNAME,datalist):
 		datastr=""
 		for col in range(len(coldefs)):
 			found=datalist[coldefs[col][0] + "[" + coldefs[col][1] + "]:"].strip().find(" new-tuple: "+coldefs[col][0] + "[" + coldefs[col][1] + "]:")
+			##print("{UPD}DATAITM:",datalist[coldefs[col][0] + "[" + coldefs[col][1] + "]:"].strip())
 			dlist[coldefs[col][0]]=datalist[coldefs[col][0] + "[" + coldefs[col][1] + "]:"].strip()
 			dtyplst[coldefs[col][0]]=coldefs[col][1]
+
+			dlist[coldefs[col][0]]=datalist[coldefs[col][0] + "[" + coldefs[col][1] + "]:"].strip()
+			
+			if dlist[coldefs[col][0]][0]==dlist[coldefs[col][0]][len(dlist[coldefs[col][0]])-1]=="'":
+				tmpstr=dlist[coldefs[col][0]]
+				dlist[coldefs[col][0]]=tmpstr[1:len(tmpstr)-1]
+			
+			##print("{UPD}DATAITM:",dlist)
+			
 			if dlist[coldefs[col][0]].lower()=='null':
 				dlist[coldefs[col][0]]=None  ## Setting value to None will automatically set the bind variable to NULL
+
 			if col == (len(coldefs)-1):
 				if found > 0:
 					datastr += coldefs[col][0] + " = %(NEWKEYVAL"+coldefs[col][0]+")s"
@@ -337,13 +370,21 @@ def _DELETE(OBJ,OBJNAME,datalist):
 
 		conn = dbconnect(DBUSER,DBPASS,DBHOST,DBNAME)
 		cur=conn.cursor()
-		cur.execute("select column_name,data_type from information_schema.columns where table_name='"+table+"' and table_schema='"+schema+"'")
+		cur.execute("select column_name,(case when data_type = 'USER-DEFINED' then udt_name else data_type end) data_type  from information_schema.columns where table_name='"+table+"' and table_schema='"+schema+"'")
 		coldefs = cur.fetchall()
 		
 		dlist = {}
 		datastr=""
 		for col in range(len(coldefs)):
+			##print("{DEL}DATAITM:",datalist[coldefs[col][0] + "[" + coldefs[col][1] + "]:"].strip())
 			dlist[coldefs[col][0]]=datalist[coldefs[col][0] + "[" + coldefs[col][1] + "]:"].strip()
+			
+			if dlist[coldefs[col][0]][0]==dlist[coldefs[col][0]][len(dlist[coldefs[col][0]])-1]=="'":
+				tmpstr=dlist[coldefs[col][0]]
+				dlist[coldefs[col][0]]=tmpstr[1:len(tmpstr)-1]
+			
+			##print("{DEL}DATAITM:",dlist)
+			
 			#if dlist[coldefs[col][0]].lower()=='null':
 			#	dlist[coldefs[col][0]]=None  ## Setting value to None will automatically set the bind variable to NULL
 			#if col == (len(coldefs)-1):
@@ -443,7 +484,7 @@ def readparams(pfile):
    
 
 def loadparams(plist):
-	global DBUSER,DBPASS,DBHOST,DBNAME,MODE, REPSLOTNAME, POLLINTERVAL, FILEPREFIX, EXTRPATH
+	global DBUSER,DBPASS,DBHOST,DBNAME,MODE, REPSLOTNAME, POLLINTERVAL, FILEPREFIX, EXTRPATH,TABLES
 	if plist.get('dbuser') != None: DBUSER = plist.get('dbuser')
 	if plist.get('dbpass') != None: DBPASS = plist.get('dbpass')
 	if plist.get('dbhost') != None: DBHOST = plist.get('dbhost')
@@ -453,6 +494,7 @@ def loadparams(plist):
 	if plist.get('fileprefix') != None: FILEPREFIX = plist.get('fileprefix')
 	if plist.get('extrpath') != None: EXTRPATH = plist.get('extrpath')
 	if plist.get('repslotname') != None: REPSLOTNAME = plist.get('repslotname')
+	if plist.get('tables') != None: TABLES = plist.get('tables')
 
 def appmain(cmdline):
 	'''This is the main section of the app'''
